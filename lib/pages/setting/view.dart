@@ -12,6 +12,7 @@ import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/accounts/account.dart';
 import 'package:PiliPlus/utils/extension/size_ext.dart';
 import 'package:PiliPlus/utils/utils.dart';
+import 'package:PiliPlus/services/remote/remote_control_service.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
@@ -179,6 +180,20 @@ class _SettingPageState extends State<SettingPage> {
       padding: EdgeInsets.only(bottom: padding.bottom + 100),
       children: [
         _buildSearchItem(theme),
+        Obx(() {
+          final remote = RemoteControlService.instance;
+          return ListTile(
+            onTap: () => Get.toNamed('/remoteMode'),
+            leading: const Icon(Icons.settings_remote_outlined),
+            title: Text('遥控模式', style: titleStyle),
+            subtitle: Text(
+              remote.connected.value
+                  ? (remote.isController ? '已连接 Pad · 遥控端' : '已配对 · 被控端')
+                  : '同局域网内，用手机控制 Pad 播放',
+              style: subTitleStyle,
+            ),
+          );
+        }),
         ..._items
             .take(_items.length - 1)
             .map(

@@ -100,6 +100,7 @@ class PLVideoPlayer extends StatefulWidget {
     this.showViewPoints,
     this.fill = Colors.black,
     this.alignment = Alignment.center,
+    this.displayOnly = false,
     super.key,
   });
 
@@ -123,6 +124,7 @@ class PLVideoPlayer extends StatefulWidget {
   final VoidCallback? showViewPoints;
   final Color fill;
   final Alignment alignment;
+  final bool displayOnly;
 
   @override
   State<PLVideoPlayer> createState() => _PLVideoPlayerState();
@@ -1348,6 +1350,25 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
   Widget build(BuildContext context) {
     maxWidth = widget.maxWidth;
     maxHeight = widget.maxHeight;
+    if (widget.displayOnly) {
+      return IgnorePointer(
+        child: Stack(
+          children: [
+            _videoWidget,
+            if (widget.danmuWidget case final danmaku?)
+              Positioned.fill(child: danmaku),
+            Positioned.fill(
+              child: Obx(
+                () => SubtitleView(
+                  controller: videoController,
+                  configuration: plPlayerController.subtitleConfig.value,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     final isFullScreen = this.isFullScreen;
     final primary = isFullScreen && colorScheme.isLight
         ? colorScheme.inversePrimary

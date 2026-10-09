@@ -68,6 +68,9 @@ import 'package:PiliPlus/utils/mobile_observer.dart';
 import 'package:PiliPlus/utils/num_utils.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
+import 'package:PiliPlus/pages/remote_mode/control_panel.dart';
+import 'package:PiliPlus/pages/remote_mode/view.dart';
+import 'package:PiliPlus/services/remote/remote_control_service.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
 import 'package:PiliPlus/utils/theme_utils.dart';
@@ -93,6 +96,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   late final VideoDetailController videoDetailController;
   late final VideoReplyController _videoReplyController;
   PlPlayerController? plPlayerController;
+  RemotePlaybackTarget? _remoteTarget;
 
   // intro ctr
   late final CommonIntroController introController;
@@ -158,6 +162,69 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
     _setPlayCallBack();
 
+    if (videoDetailController.isRemoteReceiver) {
+      hideSystemBar();
+      final controller = videoDetailController;
+      final player = controller.plPlayerController;
+      _remoteTarget = RemotePlaybackTarget(
+        selection: controller.args['remoteSelection'] as int,
+        snapshot: () => {
+          'bvid': controller.bvid,
+          'cid': controller.cid.value,
+          'title': controller.isUgc
+              ? ugcIntroController.videoDetail.value.title
+              : controller.args['title'] as String? ?? '',
+          'ready': controller.videoUrl != null && !controller.isQuerying,
+          'playing':
+              player.playerStatus.isPlaying && controller.videoState.value,
+          'position': player.positionInMilliseconds / 1000,
+          'duration': player.durationInMilliseconds / 1000,
+          'volume': player.volume.value.clamp(0.0, 1.0),
+          'danmaku': player.enableShowDanmaku.value,
+          'speed': player.playbackSpeed,
+        },
+        command: (command, value) async {
+          if (controller.isQuerying) throw StateError('视频正在准备，请稍后重试');
+          switch (command) {
+            case 'play':
+              RemoteControlService.instance.error.value = '';
+              controller.autoPlay = true;
+              if (plPlayerController == null) {
+                plPlayerController = player;
+                player
+                  ..addStatusLister(playerListener)
+                  ..addPositionListener(positionListener);
+              }
+              if (controller.videoUrl == null) {
+                await controller.queryVideoUrl();
+              } else if (!controller.videoState.value) {
+                await controller.playerInit(autoplay: true);
+              } else {
+                await player.play();
+              }
+            case 'pause':
+              await player.pause();
+            case 'seek':
+              final position = ((value as num) * 1000).round().clamp(
+                0,
+                player.durationInMilliseconds,
+              );
+              await player.seekTo(Duration(milliseconds: position));
+            case 'volume':
+              await player.setVolume(
+                (value as num).toDouble(),
+                showIndicator: false,
+              );
+            case 'danmaku':
+              player.enableShowDanmaku.value = value as bool;
+            case 'speed':
+              await player.setPlaybackSpeed((value as num).toDouble());
+          }
+        },
+      );
+      RemoteControlService.instance.attach(_remoteTarget!);
+    }
+
     if (videoDetailController.removeSafeArea) {
       hideSystemBar();
     }
@@ -180,7 +247,10 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   // 获取视频资源，初始化播放器
   void videoSourceInit() {
-    videoDetailController.queryVideoUrl(autoFullScreenFlag: true);
+    videoDetailController.queryVideoUrl(
+      autoFullScreenFlag: !videoDetailController.isRemoteReceiver,
+    );
+    if (videoDetailController.isRemoteController) return;
     if (videoDetailController.autoPlay) {
       plPlayerController = videoDetailController.plPlayerController;
       plPlayerController!
@@ -342,6 +412,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   @override
   void dispose() {
+    if (_remoteTarget case final target?) {
+      RemoteControlService.instance.detach(target);
+    }
     plPlayerController
       ?..removeStatusLister(playerListener)
       ..removePositionListener(positionListener);
@@ -360,7 +433,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       }
     }
 
-    if (!videoDetailController.removeSafeArea) {
+    if (!videoDetailController.removeSafeArea &&
+        (!videoDetailController.isRemoteReceiver ||
+            !RemoteControlService.instance.isReceiver)) {
       showSystemBar();
     }
 
@@ -723,6 +798,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   }
 
   Widget _buildHeaderOverlay() {
+    if (videoDetailController.isRemoteController) {
+      return const SizedBox.shrink();
+    }
     return Obx(
       () {
         final scrollRatio = videoDetailController.scrollRatio.value;
@@ -1231,6 +1309,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
               maxWidth: width,
               maxHeight: height,
               plPlayerController: plPlayerController!,
+              displayOnly: videoDetailController.isRemoteReceiver,
               videoDetailController: videoDetailController,
               introController: introController,
               headerControl: HeaderControl(
@@ -1269,6 +1348,38 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   @override
   Widget build(BuildContext context) {
+    if (videoDetailController.isRemoteReceiver) {
+      final service = RemoteControlService.instance;
+      return popScope(
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop &&
+              (_remoteTarget?.selection == service.selection ||
+                  !service.hasSelectedVideo)) {
+            service.stop();
+          }
+        },
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: Obx(() {
+            if (!service.connected.value) {
+              return const RemoteReceiverWaiting(message: '遥控连接已断开，请返回重新配对。');
+            }
+            if (_remoteTarget?.selection != service.selection) {
+              return const RemoteReceiverWaiting();
+            }
+            if (service.error.value.isNotEmpty) {
+              return RemoteReceiverWaiting(message: service.error.value);
+            }
+            if (!videoDetailController.autoPlay) {
+              return const RemoteReceiverWaiting(message: '视频已选好，请在遥控端开始播放。');
+            }
+            return IgnorePointer(
+              child: plPlayer(width: maxWidth, height: maxHeight),
+            );
+          }),
+        ),
+      );
+    }
     Widget child;
     if (videoDetailController.plPlayerController.isPipMode) {
       child = plPlayer(width: maxWidth, height: maxHeight, isPipMode: true);
@@ -1281,7 +1392,8 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     } else {
       child = childWhenDisabledAlmostSquare;
     }
-    if (videoDetailController.plPlayerController.keyboardControl) {
+    if (!videoDetailController.isRemoteController &&
+        videoDetailController.plPlayerController.keyboardControl) {
       child = PlayerFocus(
         plPlayerController: videoDetailController.plPlayerController,
         introController: introController,
@@ -1426,10 +1538,18 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
               child: Obx(
                 () {
                   final ctr = videoDetailController.plPlayerController;
-                  final enableShowDanmaku = ctr.enableShowDanmaku.value;
+                  final remote = RemoteControlService.instance;
+                  final isRemote = videoDetailController.isRemoteController;
+                  final enableShowDanmaku = isRemote
+                      ? remote.state['danmaku'] == true
+                      : ctr.enableShowDanmaku.value;
                   return IconButton(
                     onPressed: () {
                       final newVal = !enableShowDanmaku;
+                      if (isRemote) {
+                        remote.send('danmaku', newVal);
+                        return;
+                      }
                       ctr.enableShowDanmaku.value = newVal;
                       if (!ctr.tempPlayerConf) {
                         GStorage.setting.put(
@@ -1459,6 +1579,16 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   }
 
   Widget videoPlayer({required double width, required double height}) {
+    if (videoDetailController.isRemoteController) {
+      return SizedBox(
+        width: width,
+        height: height,
+        child: RemoteControlPanel(
+          onPlayVideo: () =>
+              videoDetailController.openRemoteVideo(autoplay: true),
+        ),
+      );
+    }
     final isFullScreen = this.isFullScreen;
     return Stack(
       clipBehavior: Clip.none,

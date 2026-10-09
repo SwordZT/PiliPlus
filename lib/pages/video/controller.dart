@@ -51,6 +51,8 @@ import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/download/download_service.dart';
+import 'package:PiliPlus/services/remote/remote_control_service.dart';
+import 'package:PiliPlus/services/remote/remote_protocol.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
 import 'package:PiliPlus/utils/extension/context_ext.dart';
@@ -81,6 +83,39 @@ class VideoDetailController extends GetxController
     with GetTickerProviderStateMixin, BlockMixin {
   /// 路由传参
   late final Map args;
+  late final bool isRemoteController;
+  bool get isRemoteReceiver => args['remoteReceiver'] == true;
+
+  Future<void> openRemoteVideo({bool? autoplay}) async {
+    final service = RemoteControlService.instance;
+    if (isFileSource) {
+      service.error.value = '本地离线视频暂不支持遥控播放';
+      return;
+    }
+    try {
+      await service.openVideo(
+        RemoteVideo(
+          aid: aid,
+          bvid: bvid,
+          cid: cid.value,
+          type: videoType.name,
+          seasonId: seasonId,
+          epId: epId,
+          pgcType: pgcType,
+          title: args['title'] as String? ?? '',
+          cover: cover.value,
+          progress: args['progress'] as int?,
+          autoplay: autoplay ?? autoPlay,
+        ),
+      );
+      args.remove('progress');
+    } catch (error) {
+      if (service.error.value.isEmpty) {
+        service.error.value = '发送视频失败：$error';
+      }
+    }
+  }
+
   late String bvid;
   late int aid;
   late final RxInt cid;
@@ -368,6 +403,9 @@ class VideoDetailController extends GetxController
   void onInit() {
     super.onInit();
     args = Get.arguments;
+    isRemoteController =
+        RemoteControlService.instance.isController && !isRemoteReceiver;
+    if (isRemoteReceiver) _autoPlay.value = args['remoteAutoplay'] == true;
     videoType = args['videoType'];
     if (videoType == VideoType.pgc) {
       if (!isLoginVideo) {
@@ -615,14 +653,27 @@ class VideoDetailController extends GetxController
 
   /// 发送弹幕
   Future<void> showShootDanmakuSheet() async {
+    final remote = RemoteControlService.instance;
+    if (isRemoteController &&
+        (!remote.connected.value ||
+            remote.state['bvid'] != bvid ||
+            remote.state['cid'] != cid.value)) {
+      SmartDialog.showToast('请先在 Pad 上播放当前视频');
+      return;
+    }
     if (plPlayerController.dmState.contains(cid.value)) {
       SmartDialog.showToast('UP主已关闭弹幕');
       return;
     }
-    final isPlaying =
-        _autoPlay.value && plPlayerController.playerStatus.isPlaying;
+    final isPlaying = isRemoteController
+        ? remote.state['playing'] == true
+        : _autoPlay.value && plPlayerController.playerStatus.isPlaying;
     if (isPlaying) {
-      await plPlayerController.pause();
+      if (isRemoteController) {
+        await remote.send('pause');
+      } else {
+        await plPlayerController.pause();
+      }
     }
     await Get.key.currentState!.push(
       PublishRoute(
@@ -630,7 +681,9 @@ class VideoDetailController extends GetxController
           final child = SendDanmakuPanel(
             cid: cid.value,
             bvid: bvid,
-            progress: plPlayerController.positionInMilliseconds,
+            progress: isRemoteController
+                ? ((remote.state['position'] as num? ?? 0) * 1000).round()
+                : plPlayerController.positionInMilliseconds,
             initialValue: savedDanmaku,
             onSave: (danmaku) => savedDanmaku = danmaku,
             onSuccess: (danmakuModel) {
@@ -648,7 +701,11 @@ class VideoDetailController extends GetxController
       ),
     );
     if (isPlaying) {
-      plPlayerController.play();
+      if (isRemoteController) {
+        await remote.send('play');
+      } else {
+        plPlayerController.play();
+      }
     }
   }
 
@@ -728,6 +785,13 @@ class VideoDetailController extends GetxController
     bool? autoplay,
     bool autoFullScreenFlag = false,
   }) async {
+    if (isRemoteController) return openRemoteVideo(autoplay: autoplay);
+    if (isClosed ||
+        (isRemoteReceiver &&
+            args['remoteSelection'] !=
+                RemoteControlService.instance.selection)) {
+      return;
+    }
     Duration? seek = defaultST ?? playedTime;
     if (seek == .zero) seek = null;
     seek ??= getFirstSegment();
@@ -830,6 +894,7 @@ class VideoDetailController extends GetxController
     bool fromReset = false,
     bool autoFullScreenFlag = false,
   }) async {
+    if (isRemoteController) return openRemoteVideo();
     if (isFileSource) {
       return initPlayerIfNeeded(autoFullScreenFlag);
     }
@@ -862,6 +927,13 @@ class VideoDetailController extends GetxController
     }
 
     final result = await _getVideoUrl(VideoQuality.hdrVivid.code);
+
+    if (isClosed ||
+        (isRemoteReceiver &&
+            args['remoteSelection'] !=
+                RemoteControlService.instance.selection)) {
+      return;
+    }
 
     if (result case Success(:final response)) {
       data = response;
@@ -994,6 +1066,12 @@ class VideoDetailController extends GetxController
     } else {
       _autoPlay.value = false;
       videoState.value = false;
+      if (isRemoteReceiver) {
+        RemoteControlService.instance.playbackError(
+          args['remoteSelection'] as int,
+          result.toString(),
+        );
+      }
       if (plPlayerController.isFullScreen.value) {
         plPlayerController.triggerFullScreen(status: false);
       }
@@ -1225,6 +1303,7 @@ class VideoDetailController extends GetxController
   }
 
   void makeHeartBeat() {
+    if (isRemoteController) return;
     if (plPlayerController.enableHeart &&
         !plPlayerController.playerStatus.isCompleted &&
         playedTime != null) {

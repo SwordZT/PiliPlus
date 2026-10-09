@@ -59,6 +59,7 @@ import 'package:PiliPlus/pages/setting/pages/font_setting.dart';
 import 'package:PiliPlus/pages/setting/pages/logs.dart';
 import 'package:PiliPlus/pages/setting/pages/play_speed_set.dart';
 import 'package:PiliPlus/pages/setting/view.dart';
+import 'package:PiliPlus/pages/remote_mode/view.dart';
 import 'package:PiliPlus/pages/settings_search/view.dart';
 import 'package:PiliPlus/pages/space_setting/view.dart';
 import 'package:PiliPlus/pages/sponsor_block/view.dart';
@@ -83,6 +84,7 @@ class Routes {
     GetPage(name: '/webview', page: () => const WebviewPage()),
     // 设置
     GetPage(name: '/setting', page: () => const SettingPage()),
+    GetPage(name: '/remoteMode', page: () => const RemoteModePage()),
     //
     GetPage(name: '/fav', page: () => const FavPage()),
     //

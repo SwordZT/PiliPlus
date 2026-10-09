@@ -47,7 +47,65 @@ on:
                 default: ""
                 type: string
 
+            publish_artifact_run:
+                description: "Publish Android APKs from a successful Build run as a preview (requires tag)"
+                required: false
+                default: ""
+                type: string
+
 jobs:
+    publish_preview:
+        if: ${{ github.event.inputs.publish_artifact_run != '' && github.event.inputs.tag != '' }}
+        name: Publish Android preview
+        runs-on: ubuntu-latest
+        permissions:
+            actions: read
+            contents: write
+        env:
+            GH_TOKEN: ${{ github.token }}
+            GH_REPO: ${{ github.repository }}
+            BUILD_RUN: ${{ github.event.inputs.publish_artifact_run }}
+            PREVIEW_TAG: ${{ github.event.inputs.tag }}
+        steps:
+            - name: Download existing APKs
+              run: |
+                  [[ "$BUILD_RUN" =~ ^[0-9]+$ ]]
+                  mkdir release-assets
+                  gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN" > run.json
+                  gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN/artifacts" > artifacts.json
+                  python3 - <<'PY'
+                  import json, re, subprocess, hashlib, pathlib, os
+                  run = json.load(open('run.json'))
+                  assert run['conclusion'] == 'success', 'Build must succeed before publishing'
+                  assert run['path'] == '.github/workflows/build.yml', 'Expected the Android Build workflow'
+                  assets = [a for a in json.load(open('artifacts.json'))['artifacts']
+                            if a['name'].endswith('.apk') and not a['expired']]
+                  assert len(assets) == 3, 'Expected three Android APKs'
+                  root = pathlib.Path('release-assets')
+                  sums = []
+                  for asset in assets:
+                      name = asset['name']
+                      assert re.fullmatch(r'PiliPlus_android_[A-Za-z0-9_.+-]+\.apk', name), 'Invalid APK name'
+                      path = root / name
+                      with path.open('wb') as out:
+                          subprocess.run(['gh', 'api', f"repos/{os.environ['GH_REPO']}/actions/artifacts/{asset['id']}/zip"], stdout=out, check=True)
+                      sums.append(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + name)
+                  (root / 'SHA256SUMS.txt').write_text('\n'.join(sums) + '\n')
+                  with open(os.environ['GITHUB_ENV'], 'a') as out:
+                      out.write('BUILD_SHA=' + run['head_sha'] + '\n')
+                  PY
+            - name: Publish preview release
+              run: |
+                  cat > release-assets/notes.md <<'NOTES'
+                  局域网遥控模式预览版，两端均需安装。大多数现代手机和平板请选择 arm64-v8a。
+
+                  入口：设置 → 遥控模式。在 Pad 开启被控模式，手机输入地址和六位配对码，连接后正常选片。支持播放/暂停、进度、快进快退、音量、倍速与弹幕开关。手机只传视频信息与指令，音视频由 Pad 自行获取。
+
+                  本预览版使用 Android 调试签名。如果设备上已有不同签名的 PiliPlus，不能直接覆盖安装；更换安装前请备份需要保留的数据。移动端权限、系统音量和实际播放仍需双设备验证。
+                  NOTES
+                  printf '\n源码提交：%s\n构建记录：https://github.com/%s/actions/runs/%s\n' "$BUILD_SHA" "$GH_REPO" "$BUILD_RUN" >> release-assets/notes.md
+                  gh release create "$PREVIEW_TAG" release-assets/*.apk release-assets/SHA256SUMS.txt --target "$BUILD_SHA" --title '遥控模式预览版' --prerelease --notes-file release-assets/notes.md
+
     android:
         if: ${{ (github.event_name == 'pull_request' && github.repository == 'bggRGjQaUbCoE/PiliPlus') || github.event.inputs.build_android == 'true' }}
         name: Release Android
